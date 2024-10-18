@@ -1,0 +1,257 @@
+---
+title: "New Method"
+author: "Yuan Lee"
+date: "2024-05-01"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Package
+```{r}
+library(quantmod)
+library(PerformanceAnalytics)
+library(CVXR)
+library(moments)
+library(readxl)
+library(dplyr)
+```
+
+#Solver
+```{r}
+#Mean_Variance
+slvr_mv<-function(return_matrix,target_rate){
+  cov_mat<- cov(return_matrix)
+  X <- Variable(7)
+  constraint_full_investment <- sum(X) == 1.0
+  constraint_non_negativity <- X >= 0
+  constraint_return_limit <- mean(return_matrix%*%X) >= target_rate
+  prob_return_constraint <- Problem(Minimize(quad_form(X, cov_mat)),
+                                 list(constraint_full_investment,
+                                      constraint_non_negativity ,
+                                      constraint_return_limit))
+  result_return_constraint <- solve(prob_return_constraint)
+  weight<-result_return_constraint$getValue(X)
+  return(round(weight,digits = 4))
+} 
+
+#MAD
+slvr_mad<-function(return_matrix,target_rate){
+  mu<- matrix(colMeans(return_matrix),nrow =7)
+  X <- Variable(7)
+  constraint_full_investment <- sum(X) == 1.0
+  constraint_non_negativity <- X >= 0
+  constraint_return_limit <- mean(return_matrix%*%X) >= target_rate
+  prob_return_constraint <- Problem(Minimize(mean(abs(return_matrix%*%X-t(mu)%*%X))),
+                                 list(constraint_full_investment,
+                                      constraint_non_negativity ,
+                                      constraint_return_limit))
+  result_return_constraint <- solve(prob_return_constraint,solver="GLPK")
+  weight<-result_return_constraint$getValue(X)
+  return(round(weight,digits = 4))
+} 
+
+#CVaR
+slvr_cvar<-function(return_matrix,target_rate){
+  X <- Variable(7)
+  gamma <- Variable(1) #gamma is equivalent to VaR
+  L <- Variable(nrow(return_matrix)) #losses
+  constraint_full_investment <- sum(X) == 1.0
+  constraint_non_negativity <- X >= 0
+  constraint_return_limit <- mean(return_matrix%*%X) >= target_rate
+  L_value<- L >= -return_matrix %*% X - gamma
+  L_greater <- L >= 0
+  prob_return_constraint <- Problem(Minimize(gamma + mean(L) / 0.1),
+                               list(constraint_full_investment,
+                                    constraint_non_negativity ,
+                                    constraint_return_limit,
+                                    L_value,
+                                    L_greater))
+  result_return_constraint <- solve(prob_return_constraint,solver="GLPK")
+  weight<-result_return_constraint$getValue(X)
+  return(round(weight,digits = 4))
+}
+    
+```
+
+#Statistical tools
+```{r}
+#Expected return
+expected_return <-function(weight,return_matrix){
+  mu<- matrix(colMeans(return_matrix),ncol  = 7)
+  return(mu%*%weight)
+}
+#Standard deviation
+standard_deviation <-function(weight,return_matrix){
+  cov_mat<- cov(return_matrix)
+  return(sqrt(t(weight)%*%cov_mat%*%weight))
+}
+#MAD
+mad_function <-function(weight,return_matrix){
+  return(mad(return_matrix%*%weight))
+}
+#VaR
+var_function <-function(weight,return_matrix){
+  VaR90 <- quantile(-return_matrix %*% weight, probs = 0.9, type = 1)
+  return(VaR90)
+}
+
+#CVaR
+cvar_function <-function(weight,return_matrix){
+  VaR90 <- quantile(-return_matrix %*% weight, probs = 0.9, type = 1)
+  val <- -return_matrix %*% weight
+  CVaR90 <- mean(val[val>VaR90])/(0.1) + VaR90
+  return(CVaR90 )
+}
+#Statistical summary
+show_stat <- function(weight,return_matrix){
+    stats <- c(
+    expected_return  = expected_return(weight,return_matrix),
+    standard_deviation = standard_deviation(weight,return_matrix),
+    mad=mad_function(weight,return_matrix),
+    var=var_function(weight,return_matrix),
+    cvar=cvar_function(weight,return_matrix),
+    weight_IWB=weight[1],
+    weight_IWM=weight[2],
+    weight_EFA=weight[3],
+    weight_EEM=weight[4],
+    weight_VNQ=weight[5],
+    weight_LQD=weight[6],
+    weight_SHY=weight[7]
+    )
+  return(round(stats,digits=5))
+}
+```
+
+#Organizer
+```{r}
+#Data frame organizer
+slvrs_stats<- function(return_matrix,target_rate){
+  w1<- slvr_mv(return_matrix,target_rate)
+  w2<- slvr_mad(return_matrix,target_rate)
+  w3<- slvr_cvar(return_matrix,target_rate)
+  result_mv<-show_stat(w1,return_matrix)
+  result_mad<-show_stat(w2,return_matrix)
+  result_cvar<-show_stat(w3,return_matrix)
+  df<- data_frame(result_mv,result_mad,result_cvar)
+  colnames(df)<-c(paste0("Mean Variance ", round(target_rate,digits = 5)*100, "%"),
+                  paste0("MAD ", round(target_rate,digits = 5)*100, "%"),
+                  paste0("CVaR ", round(target_rate,digits = 5)*100, "%")
+                  )
+
+  return(df)
+}
+
+```
+
+#Data
+```{r}
+#Get data
+daily_return <- read_excel("Project1Data.xlsx", sheet ="days_1" )
+weekly_return <- read_excel("Project1Data.xlsx", sheet ="days_5" )
+monthly_return <- read_excel("Project1Data.xlsx", sheet ="days_21" )
+quarterly_return <- read_excel("Project1Data.xlsx", sheet ="days_62" )
+yearly_return <- read_excel("Project1Data.xlsx", sheet ="days_252" )
+```
+```{r}
+#Transfer into matrix
+return_matrix_daily<-data.matrix(daily_return)[,2:8]
+return_matrix_weekly<-data.matrix(weekly_return)[,2:8]
+return_matrix_monthly<-data.matrix(monthly_return)[,2:8]
+return_matrix_quarterly<-data.matrix(quarterly_return)[,2:8]
+return_matrix_yearly<-data.matrix(yearly_return)[,2:8]
+```
+
+#Computation
+```{r}
+#Yearly
+return_matrix<-return_matrix_yearly
+day<-252
+total_df <- data.frame(matrix(ncol = 0, nrow = 12))
+for (i in c(0.02,0.04,0.06)){
+  df_target<-slvrs_stats(return_matrix,i*(day/252))
+  total_df <- cbind(total_df, df_target)
+}
+stat_names <- c("Expected Return","Volatility", "MAD", "VaR 90", "CVaR 90",
+                "Weight IWB", "Weight IWM", "Weight EFA", "Weight EEM",
+                "Weight VNQ", "Weight LQD", "Weight SHY")
+rownames(total_df) <- stat_names
+total_df_yearly<-data.frame(t(total_df))
+```
+
+```{r}
+#Quarterly
+return_matrix<-return_matrix_quarterly
+day<-62
+total_df <- data.frame(matrix(ncol = 0, nrow = 12))
+for (i in c(0.02,0.04,0.06)){
+  df_target<-slvrs_stats(return_matrix,i*(day/252))
+  total_df <- cbind(total_df, df_target)
+}
+stat_names <- c("Expected Return","Volatility", "MAD", "VaR 90", "CVaR 90",
+                "Weight IWB", "Weight IWM", "Weight EFA", "Weight EEM",
+                "Weight VNQ", "Weight LQD", "Weight SHY")
+rownames(total_df) <- stat_names
+total_df_quarterly<-data.frame(t(total_df))
+```
+
+```{r}
+#Monthly
+return_matrix<-return_matrix_monthly
+day<-21
+total_df <- data.frame(matrix(ncol = 0, nrow = 12))
+for (i in c(0.02,0.04,0.06)){
+  df_target<-slvrs_stats(return_matrix,i*(day/252))
+  total_df <- cbind(total_df, df_target)
+}
+stat_names <- c("Expected Return","Volatility", "MAD", "VaR 90", "CVaR 90",
+                "Weight IWB", "Weight IWM", "Weight EFA", "Weight EEM",
+                "Weight VNQ", "Weight LQD", "Weight SHY")
+rownames(total_df) <- stat_names
+total_df_monthly<-data.frame(t(total_df))
+```
+
+
+```{r}
+#Weekly
+return_matrix<-return_matrix_weekly
+day<-5
+total_df <- data.frame(matrix(ncol = 0, nrow = 12))
+for (i in c(0.02,0.04,0.06)){
+  df_target<-slvrs_stats(return_matrix,i*(day/252))
+  total_df <- cbind(total_df, df_target)
+}
+stat_names <- c("Expected Return","Volatility", "MAD", "VaR 90", "CVaR 90",
+                "Weight IWB", "Weight IWM", "Weight EFA", "Weight EEM",
+                "Weight VNQ", "Weight LQD", "Weight SHY")
+rownames(total_df) <- stat_names
+total_df_weekly<-data.frame(t(total_df))
+```
+
+```{r}
+#Daily
+return_matrix<-return_matrix_daily
+day<-1
+total_df <- data.frame(matrix(ncol = 0, nrow = 12))
+for (i in c(0.02,0.04,0.06)){
+  df_target<-slvrs_stats(return_matrix,i*(day/252))
+  total_df <- cbind(total_df, df_target)
+}
+stat_names <- c("Expected Return","Volatility", "MAD", "VaR 90", "CVaR 90",
+                "Weight IWB", "Weight IWM", "Weight EFA", "Weight EEM",
+                "Weight VNQ", "Weight LQD", "Weight SHY")
+rownames(total_df) <- stat_names
+total_df_daily<-data.frame(t(total_df))
+```
+
+#Results
+```{r}
+print(total_df_yearly)
+print(total_df_quarterly)
+print(total_df_monthly)
+print(total_df_weekly)
+print(total_df_daily)
+```
